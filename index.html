@@ -279,6 +279,14 @@
   .lab-search-empty { display:none; color:var(--warning); font-size:13px; }
   .lab-track-heading { margin:28px 0 10px; padding-bottom:7px; border-bottom:1px solid var(--border); font-size:17px; }
   .lab-card { scroll-margin-top:16px; border:1px solid var(--border); background:var(--panel); border-radius:12px; padding:18px 20px; margin-bottom:16px; }
+  .lab-title-row { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; }
+  .lab-title-row h3 { flex:1 1 auto; min-width:0; }
+  .lab-collapse-toggle { flex:0 0 auto; min-width:104px; padding:6px 10px; font-size:12px; }
+  .lab-collapse-toggle::before { content:"▸"; display:inline-block; margin-right:6px; transition:transform .15s ease; }
+  .lab-collapse-toggle[aria-expanded="true"]::before { transform:rotate(90deg); }
+  .lab-collapse-region[hidden] { display:none; }
+  .lab-card.is-collapsed { padding-bottom:14px; }
+  .lab-card.is-collapsed .lab-header .lab-provenance { display:none; }
   .lab-card h3 { margin:0 0 6px; font-size:17px; }
   .lab-card h4 { margin:16px 0 6px; font-size:14px; color:var(--text); }
   .lab-card h5 { margin:12px 0 5px; font-size:13px; color:var(--text); }
@@ -343,6 +351,8 @@
     .coverage-count { white-space:normal; }
     .lab-dashboard { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .lab-card { padding:15px 13px; }
+    .lab-title-row { align-items:stretch; flex-direction:column; gap:7px; }
+    .lab-collapse-toggle { align-self:flex-start; min-height:40px; }
     .lab-progress-wrap { grid-template-columns:1fr auto; }
     .lab-progress-bar { grid-column:1 / -1; }
     .exam-bar { align-items:flex-start; }
@@ -1741,7 +1751,7 @@
 
 <section id="labs" role="tabpanel" aria-labelledby="tab-labs" tabindex="0" hidden>
   <h2>Console workflows and practical labs</h2>
-  <div class="notice"><strong>How to use these labs:</strong> the Oracle University course transcript supplies the teaching sequence and demonstrations; all required information is embedded here and the transcript is never linked or loaded. Current Oracle documentation validates Console terminology, prerequisites, and behaviour. <strong>Live</strong> means the workflow can be performed in a suitable practice tenancy, <strong>guided</strong> means follow every decision but stop before creating costly or externally dependent resources, and <strong>read-only</strong> means inspect without changing configuration. These are original study exercises—not recalled exam questions.</div>
+  <div class="notice"><strong>How to use these labs:</strong> the Oracle University course transcript supplies the teaching sequence and demonstrations; all required information is embedded here and the transcript is never linked or loaded. Current Oracle documentation validates Console terminology, prerequisites, and behaviour. <strong>Live</strong> means the workflow can be performed in a suitable practice tenancy, <strong>guided</strong> means follow every decision but stop before creating costly or externally dependent resources, and <strong>read-only</strong> means inspect without changing configuration. Labs start collapsed; expand the one you need, or use the display controls below. Your open/closed choices are remembered in this browser. These are original study exercises—not recalled exam questions.</div>
   <div class="lab-warning"><strong>Before every live lab:</strong> select the intended region and compartment, confirm IAM and service limits, check current pricing, use only disposable study resources, record the starting configuration, and read the cleanup order before creating anything. Example CIDRs must be changed if they overlap your tenancy, on-premises network, or another cloud.</div>
 
   <div class="lab-dashboard" aria-label="Lab progress summary">
@@ -1752,13 +1762,16 @@
     <div class="lab-stat"><strong id="lab-guided-count">0</strong><span>Guided/read-only defaults</span></div>
   </div>
 
-  <div class="lab-controls" aria-label="Filter labs">
+  <div class="lab-controls" aria-label="Filter and display labs">
     <div class="lab-control"><label for="lab-search">Search labs</label><input type="search" id="lab-search" placeholder="Search service, task, port, or symptom…"></div>
     <div class="lab-control"><label for="lab-track-filter">Track</label><select id="lab-track-filter"><option value="all">All tracks</option><option value="foundation">VCN foundations</option><option value="routing">Gateways and routing</option><option value="application">Application networking</option><option value="hybrid">Hybrid networking</option><option value="security">Secure access</option><option value="operations">Operations</option></select></div>
     <div class="lab-control"><label for="lab-mode-filter">Default mode</label><select id="lab-mode-filter"><option value="all">All modes</option><option value="live">Live</option><option value="guided">Guided</option><option value="read-only">Read-only</option></select></div>
     <div class="lab-control"><label for="lab-difficulty-filter">Difficulty</label><select id="lab-difficulty-filter"><option value="all">All difficulties</option><option value="foundation">Foundation</option><option value="intermediate">Intermediate</option><option value="advanced">Advanced</option></select></div>
     <div class="lab-control"><label for="lab-cost-filter">Cost risk</label><select id="lab-cost-filter"><option value="all">All cost levels</option><option value="none">None</option><option value="low">Low</option><option value="variable">Variable</option><option value="high">High</option></select></div>
     <button class="btn" type="button" id="lab-reset-filters">Reset filters</button>
+    <button class="btn" type="button" id="lab-expand-all">Expand all</button>
+    <button class="btn" type="button" id="lab-collapse-all">Collapse all</button>
+    <span class="sr-only" id="lab-display-status" role="status" aria-live="polite"></span>
   </div>
   <nav class="lab-index" id="lab-index" aria-label="Lab index"></nav>
   <p class="lab-search-empty" id="lab-search-empty" role="status" aria-live="polite">No labs match those filters.</p>
@@ -5696,6 +5709,120 @@ function refreshGuideCounts(){
     if(el) el.textContent = counts[id];
   });
 }
+var LAB_COLLAPSE_KEY = "ociStudyGuideLabCollapse_v1";
+var labCollapseCache = null;
+var labScrollRefreshFrame = null;
+function scheduleLabScrollRefresh(){
+  if(labScrollRefreshFrame !== null) return;
+  labScrollRefreshFrame = requestAnimationFrame(function(){
+    labScrollRefreshFrame = null;
+    refreshScrollableRegions();
+  });
+}
+function loadLabCollapseState(){
+  if(labCollapseCache) return labCollapseCache;
+  labCollapseCache = {};
+  try {
+    var raw = localStorage.getItem(LAB_COLLAPSE_KEY);
+    var parsed = raw ? JSON.parse(raw) : null;
+    if(parsed && typeof parsed === "object" && !Array.isArray(parsed)){
+      Object.keys(parsed).forEach(function(id){ if(typeof parsed[id] === "boolean") labCollapseCache[id] = parsed[id]; });
+    }
+  } catch(e){}
+  return labCollapseCache;
+}
+function saveLabCollapseState(state){
+  labCollapseCache = state;
+  if(storageUnavailable) return;
+  try {
+    localStorage.setItem(LAB_COLLAPSE_KEY, JSON.stringify(state));
+  } catch(e){
+    storageUnavailable = true;
+    showStorageWarning();
+  }
+}
+function labCollapseId(card){
+  return card.getAttribute("data-lab-id") || card.id;
+}
+function setLabExpanded(card, expanded, persist){
+  var region = card.querySelector(":scope > .lab-collapse-region");
+  var button = card.querySelector(".lab-collapse-toggle");
+  if(!region || !button) return;
+  region.hidden = !expanded;
+  card.classList.toggle("is-collapsed", !expanded);
+  button.setAttribute("aria-expanded", expanded ? "true" : "false");
+  button.textContent = expanded ? "Collapse lab" : "Expand lab";
+  var heading = card.querySelector(".lab-title-row h3");
+  button.setAttribute("aria-label", (expanded ? "Collapse " : "Expand ") + (heading ? heading.textContent : "lab"));
+  if(expanded) scheduleLabScrollRefresh();
+  if(persist){
+    var state = loadLabCollapseState();
+    state[labCollapseId(card)] = !!expanded;
+    saveLabCollapseState(state);
+  }
+}
+function makeLabCollapsible(card){
+  if(card.querySelector(":scope > .lab-collapse-region")) return;
+  var header = card.querySelector(":scope > .lab-header");
+  var title = header ? header.querySelector("h3") : card.querySelector(":scope > h3");
+  if(!title) return;
+
+  var titleRow = document.createElement("div");
+  titleRow.className = "lab-title-row";
+  title.parentNode.insertBefore(titleRow, title);
+  titleRow.appendChild(title);
+
+  var toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "btn lab-collapse-toggle";
+  titleRow.appendChild(toggle);
+
+  var badges = card.querySelector(":scope > .lab-badges");
+  var progress = card.querySelector(":scope > .lab-progress-wrap");
+  var meta = card.querySelector(":scope > .lab-meta");
+  var collapsible = Array.prototype.slice.call(card.children).filter(function(node){
+    if(header) return node !== header;
+    return node !== titleRow && node !== badges && node !== progress && node !== meta;
+  });
+  var region = document.createElement("div");
+  region.className = "lab-collapse-region";
+  region.id = card.id + "-content";
+  card.insertBefore(region, collapsible[0] || null);
+  collapsible.forEach(function(node){ region.appendChild(node); });
+  toggle.setAttribute("aria-controls", region.id);
+  toggle.addEventListener("click", function(){
+    setLabExpanded(card, toggle.getAttribute("aria-expanded") !== "true", true);
+  });
+
+  var state = loadLabCollapseState();
+  var hasSavedState = Object.prototype.hasOwnProperty.call(state, labCollapseId(card));
+  setLabExpanded(card, hasSavedState ? state[labCollapseId(card)] : false, false);
+}
+function setAllLabsExpanded(expanded){
+  var cards = Array.prototype.slice.call(document.querySelectorAll("#labs .lab-card"));
+  var state = loadLabCollapseState();
+  cards.forEach(function(card){
+    setLabExpanded(card, expanded, false);
+    state[labCollapseId(card)] = !!expanded;
+  });
+  saveLabCollapseState(state);
+  var status = document.getElementById("lab-display-status");
+  if(status) status.textContent = "All " + cards.length + " labs " + (expanded ? "expanded." : "collapsed.");
+}
+function expandLabFromHash(persist){
+  if(!location.hash || location.hash.length < 2) return;
+  var id;
+  try { id = decodeURIComponent(location.hash.slice(1)); } catch(e){ id = location.hash.slice(1); }
+  var card = document.getElementById(id);
+  if(card && card.classList.contains("lab-card")) setLabExpanded(card, true, !!persist);
+}
+function initLabCollapseControls(){
+  var expandAll = document.getElementById("lab-expand-all");
+  var collapseAll = document.getElementById("lab-collapse-all");
+  if(expandAll) expandAll.addEventListener("click", function(){ setAllLabsExpanded(true); });
+  if(collapseAll) collapseAll.addEventListener("click", function(){ setAllLabsExpanded(false); });
+  window.addEventListener("hashchange", function(){ expandLabFromHash(true); });
+}
 function getLabRecord(p, card){
   var id = card.getAttribute("data-lab-id");
   return p.labs[id] || {
@@ -5784,6 +5911,7 @@ function renderLabIndex(){
     a.setAttribute("data-lab-link", card.getAttribute("data-lab-id"));
     var heading = card.querySelector("h3");
     a.textContent = heading ? heading.textContent : "Lab " + (i + 1);
+    a.addEventListener("click", function(){ setLabExpanded(card, true, true); });
     index.appendChild(a);
   });
 }
@@ -5923,11 +6051,14 @@ function initLabCompletion(){
         if(!document.getElementById("progress").hidden) renderProgressTab();
       });
     });
+    makeLabCollapsible(card);
     updateLabCardProgress(card, p);
   });
   if(migrated) saveProgress(p);
   renderLabIndex();
   initLabFilters();
+  initLabCollapseControls();
+  expandLabFromHash(true);
   renderLabDashboard();
   renderCoverageCounts();
 }
